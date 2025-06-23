@@ -1749,9 +1749,9 @@ def create_reliability_assessment(result: AnalysisResult, ferm: dict, out_dir: P
         ax.axis('off')
     else:
         # === SOLUSI 1: Tingkatkan ukuran vertikal gambar agar ada lebih banyak ruang ===
-        # Jumlah faktor menentukan tinggi gambar, min 7, maks 12 inci
+        # Jumlah faktor menentukan tinggi gambar, min 7, maks 14 inci
         num_factors = len(reliability_factors)
-        fig_height = max(7, min(12, num_factors * 1.5))
+        fig_height = max(7, min(14, num_factors * 1.8))
         fig, ax = plt.subplots(figsize=(12, fig_height))
     
         # Extract factor names and impact
@@ -1773,7 +1773,7 @@ def create_reliability_assessment(result: AnalysisResult, ferm: dict, out_dir: P
         colors = ['#28a745' if i == 'Positif' else '#ffc107' if i == 'Netral' else '#dc3545' for i in impacts]
         
         # Create horizontal bar chart
-        bars = ax.barh(factors, impact_values, color=colors, alpha=0.7, height=0.6)
+        bars = ax.barh(factors, impact_values, color=colors, alpha=0.7, height=0.8)
         
         # Add assessment text, wrap long text
         import textwrap
@@ -1800,6 +1800,7 @@ def create_reliability_assessment(result: AnalysisResult, ferm: dict, out_dir: P
 
     # === SOLUSI 2: Gunakan tight_layout untuk menyesuaikan plot secara otomatis ===
     plt.tight_layout(pad=3.0) # pad=3.0 memberikan lebih banyak bantalan
+    plt.subplots_adjust(left=0.25, right=0.95)
     
     # Save the visualization
     out_path = out_dir / f"ferm_reliability_{Path(result.video_path).stem}.png"
