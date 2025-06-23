@@ -190,8 +190,53 @@ class HistoryManager:
         
         with open(self.history_file, 'w') as f:
             json.dump([], f)
-            
+
         return count
+
+    def _generate_html_report(self, entry):
+        """Membangun laporan HTML ringkas yang merangkum seluruh tahap DFRWS."""
+        phases = [
+            "Identifikasi (Identification)",
+            "Preservasi (Preservation)",
+            "Pengumpulan (Collection)",
+            "Pemeriksaan (Examination)",
+            "Analisis (Analysis)",
+            "Pelaporan (Reporting)",
+        ]
+
+        ferm = entry.get("forensic_evidence_matrix", {})
+        reliability = ferm.get("conclusion", {}).get("reliability_assessment", "N/A")
+
+        html = [
+            "<html><head><meta charset='utf-8'><title>VIFA-Pro Report</title></head><body>",
+            f"<h1>Hasil Analisis Video: {entry.get('video_name')}</h1>",
+            f"<p>Waktu analisis: {entry.get('timestamp')}</p>",
+            "<h2>Ringkasan FERM</h2>",
+            f"<p>Penilaian reliabilitas bukti: <b>{reliability}</b></p>",
+        ]
+
+        primary = ferm.get("conclusion", {}).get("primary_findings", [])
+        if primary:
+            html.append("<ul>")
+            for f in primary:
+                html.append(f"<li>{f['finding']} ({f['confidence']})</li>")
+            html.append("</ul>")
+
+        html.append("<h2>Artefak Visual</h2>")
+        for name, path in entry.get("saved_artifacts", {}).items():
+            data = self.get_artifact_base64(path)
+            if data:
+                title = name.replace('_', ' ').title()
+                html.append(f"<h3>{title}</h3><img src='{data}' style='max-width:100%;'><br>")
+
+        html.append("<h2>Tahapan DFRWS</h2><ol>")
+        for ph in phases:
+            html.append(f"<li>{ph}</li>")
+        html.append("</ol>")
+        html.append("<p>Hasil di atas merupakan analisis otomatis. Interpretasi akhir memerlukan evaluasi manual oleh pakar forensik.</p>")
+        html.append("</body></html>")
+
+        return "\n".join(html)
     
     def export_analysis(self, analysis_id):
         """
@@ -211,6 +256,9 @@ class HistoryManager:
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             report_data = json.dumps(entry, indent=4)
             zip_file.writestr('analysis_report.json', report_data)
+
+            html_report = self._generate_html_report(entry)
+            zip_file.writestr('analysis_report.html', html_report)
 
             artifact_folder = Path(entry.get("artifacts_folder", ""))
             if artifact_folder.exists():
