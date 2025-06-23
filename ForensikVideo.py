@@ -97,7 +97,10 @@ CONFIG = {
     "OPTICAL_FLOW_Z_THRESH": 5.0,
     "DUPLICATION_SSIM_CONFIRM": 0.80,
     "SIFT_MIN_MATCH_COUNT": 10,
-    "USE_AUTO_THRESHOLDS": True
+    "USE_AUTO_THRESHOLDS": True,
+    # Nilai default jika pengguna menonaktifkan mode otomatis
+    "SSIM_USER_THRESHOLD": 0.30,
+    "Z_USER_THRESHOLD": 5.0
 }
 
 class Icons:
@@ -108,6 +111,16 @@ class Icons:
 # Fungsi log yang dienkapsulasi untuk output ke konsol dan UI Streamlit
 def log(message: str):
     print(message, file=sys.stdout) # Menggunakan stdout asli untuk logging
+
+def adaptive_thresholds(fps: int, motion_level: float) -> tuple[float, float]:
+    """Kalkulasi sederhana ambang adaptif berdasarkan FPS dan level gerakan."""
+    # Ambang SSIM sedikit dinaikkan pada fps lebih tinggi
+    ssim_base = 0.30
+    if fps > 24:
+        ssim_base += 0.02
+    # Ambang z-score meningkat sesuai level gerakan pada video
+    z_base = 4.0 + (motion_level * 2)
+    return round(ssim_base, 2), round(z_base, 2)
 
 def print_stage_banner(stage_number: int, stage_name: str, icon: str, description: str):
     width=80
@@ -2182,11 +2195,12 @@ def run_tahap_3_sintesis_bukti(result: AnalysisResult, out_dir: Path):
             log(f"     - MAD (Median Absolute Deviation): {mad_flow:.3f}")
 
             # Deteksi anomali dengan Z-score
+            z_thresh = CONFIG["OPTICAL_FLOW_Z_THRESH"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("Z_USER_THRESHOLD", CONFIG["OPTICAL_FLOW_Z_THRESH"])
             for f in frames:
                 if f.optical_flow_mag is not None and f.optical_flow_mag > 0:
                     if mad_flow != 0:
                         z_score = 0.6745 * (f.optical_flow_mag - median_flow) / mad_flow
-                        if abs(z_score) > CONFIG["OPTICAL_FLOW_Z_THRESH"]:
+                        if abs(z_score) > z_thresh:
                             f.evidence_obj.reasons.append("Lonjakan Aliran Optik")
                             f.evidence_obj.metrics["optical_flow_z_score"] = round(z_score, 2)
 
@@ -2235,7 +2249,8 @@ def run_tahap_3_sintesis_bukti(result: AnalysisResult, out_dir: Path):
             ssim_drop = f_prev.ssim_to_prev - f_curr.ssim_to_prev
 
             # Deteksi penurunan drastis
-            if ssim_drop > CONFIG["SSIM_DISCONTINUITY_DROP"]:
+            ssim_thresh = CONFIG["SSIM_DISCONTINUITY_DROP"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("SSIM_USER_THRESHOLD", CONFIG["SSIM_DISCONTINUITY_DROP"])
+            if ssim_drop > ssim_thresh:
                 f_curr.evidence_obj.reasons.append("Penurunan Drastis SSIM")
                 f_curr.evidence_obj.metrics["ssim_drop"] = round(ssim_drop, 4)
 
@@ -2887,7 +2902,8 @@ def run_tahap_4_visualisasi_dan_penilaian(result: AnalysisResult, out_dir: Path)
             median_flow = np.median(flow_mags_for_z)
             mad_flow = stats.median_abs_deviation(flow_mags_for_z)
             mad_flow = 1e-9 if mad_flow == 0 else mad_flow
-            threshold_mag_upper = (CONFIG["OPTICAL_FLOW_Z_THRESH"] / 0.6745) * mad_flow + median_flow
+            z_thresh = CONFIG["OPTICAL_FLOW_Z_THRESH"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("Z_USER_THRESHOLD", CONFIG["OPTICAL_FLOW_Z_THRESH"])
+            threshold_mag_upper = (z_thresh / 0.6745) * mad_flow + median_flow
             plt.axhline(y=threshold_mag_upper, color='blue', linestyle='--', linewidth=1, label=f'Ambang Batas Atas Z-score')
 
         plt.title('Perubahan Rata-rata Magnitudo Aliran Optik', fontsize=14, weight='bold')
@@ -3003,7 +3019,13 @@ def calculate_event_severity(event: dict) -> float:
     return severity
 
 # --- TAHAP 5: PENYUSUNAN LAPORAN & VALIDASI FORENSIK ---
-def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, baseline_result: AnalysisResult | None = None):
+def run_tahap_5_pelaporan_dan_validasi(
+    result: AnalysisResult,
+    out_dir: Path,
+    baseline_result: AnalysisResult | None = None,
+    include_simple: bool = True,
+    include_technical: bool = True,
+):
     print_stage_banner(5, "Penyusunan Laporan & Validasi Forensik", Icons.REPORTING,
                        "Menghasilkan laporan PDF naratif yang komprehensif dengan fokus pada Analisis FERM.")
 
@@ -3108,6 +3130,14 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
         canvas.drawString(30, 30, f"Laporan VIFA-Pro | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         canvas.drawRightString(A4[0] - 30, 30, f"Halaman {doc.page}")
         canvas.restoreState()
+
+    def add_simple(text: str):
+        if include_simple:
+            story.append(Paragraph(text, styles['SimplifiedExplanation']))
+
+    def add_technical(text: str):
+        if include_technical:
+            story.append(Paragraph(text, styles['TechnicalExplanation']))
 
     # --- HALAMAN SAMPUL ---
     story.append(Paragraph("Laporan Analisis Forensik Video", styles['h1']))
@@ -3235,10 +3265,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           dan memungkinkan perbandingan yang lebih andal antara frame.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Bayangkan Anda memiliki foto yang sebagian terlalu gelap dan sebagian terlalu terang. 
-                          Normalisasi adalah seperti 'menyeimbangkan' foto tersebut agar semua detail terlihat jelas, 
-                          seperti penyesuaian otomatis di aplikasi foto. Ini membuat sistem dapat 'melihat' lebih baik 
-                          perbedaan antara frame-frame video.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> Bayangkan Anda memiliki foto yang sebagian terlalu gelap dan sebagian terlalu terang.
+                          Normalisasi adalah seperti 'menyeimbangkan' foto tersebut agar semua detail terlihat jelas,
+                          seperti penyesuaian otomatis di aplikasi foto. Ini membuat sistem dapat 'melihat' lebih baik
+                          perbedaan antara frame-frame video.""")
     
     # Tampilkan contoh frame yang dinormalisasi
     if result.frames and result.frames[0].img_path_comparison and Path(result.frames[0].img_path_comparison).exists():
@@ -3253,10 +3283,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           mendadak dalam keanggotaan klaster dapat menandakan diskontinuitas video.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> K-Means bekerja seperti mengelompokkan foto-foto berdasarkan warna dominannya. 
-                          Misalnya, foto pantai dengan banyak biru dan putih akan masuk satu kelompok, sementara foto hutan dengan 
-                          dominasi hijau akan masuk kelompok lain. Jika dalam video terjadi perpindahan tiba-tiba dari satu kelompok 
-                          warna ke kelompok lain, ini mungkin menandakan adanya 'potongan' atau editing.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> K-Means bekerja seperti mengelompokkan foto-foto berdasarkan warna dominannya.
+                          Misalnya, foto pantai dengan banyak biru dan putih akan masuk satu kelompok, sementara foto hutan dengan
+                          dominasi hijau akan masuk kelompok lain. Jika dalam video terjadi perpindahan tiba-tiba dari satu kelompok
+                          warna ke kelompok lain, ini mungkin menandakan adanya 'potongan' atau editing.""")
     
     # Tampilkan distribusi K-Means
     if result.kmeans_artifacts.get('distribution_plot_path') and Path(result.kmeans_artifacts['distribution_plot_path']).exists():
@@ -3298,10 +3328,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           dapat mengindikasikan perubahan adegan yang tajam atau diskontinuitas dalam aliran visual.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Grafik ini menunjukkan 'kelompok warna' untuk setiap frame dalam 
-                          video. Dalam video normal, perubahan kelompok biasanya terjadi secara bertahap atau pada momen 
-                          perpindahan adegan yang jelas. Lompatan tiba-tiba yang tidak teratur bisa menandakan bahwa 
-                          sebagian video telah dipotong atau ditambahkan.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> Grafik ini menunjukkan 'kelompok warna' untuk setiap frame dalam
+                          video. Dalam video normal, perubahan kelompok biasanya terjadi secara bertahap atau pada momen
+                          perpindahan adegan yang jelas. Lompatan tiba-tiba yang tidak teratur bisa menandakan bahwa
+                          sebagian video telah dipotong atau ditambahkan.""")
     
     # Tampilkan plot K-Means temporal
     if result.plots.get('kmeans_temporal') and Path(result.plots['kmeans_temporal']).exists():
@@ -3316,10 +3346,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           menjadi tanda diskontinuitas atau manipulasi.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> SSIM adalah seperti mengukur seberapa mirip dua gambar berurutan. 
-                          Dalam video normal, frame berurutan biasanya sangat mirip, dengan perubahan kecil karena pergerakan. 
-                          Jika tiba-tiba dua frame berurutan sangat berbeda (nilai SSIM turun drastis), ini bisa menandakan 
-                          ada 'lompatan' tidak wajar dalam video - seperti halaman yang hilang dari buku.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> SSIM adalah seperti mengukur seberapa mirip dua gambar berurutan.
+                          Dalam video normal, frame berurutan biasanya sangat mirip, dengan perubahan kecil karena pergerakan.
+                          Jika tiba-tiba dua frame berurutan sangat berbeda (nilai SSIM turun drastis), ini bisa menandakan
+                          ada 'lompatan' tidak wajar dalam video - seperti halaman yang hilang dari buku.""")
     
     # Tampilkan plot SSIM
     if result.plots.get('ssim_temporal') and Path(result.plots['ssim_temporal']).exists():
@@ -3333,11 +3363,11 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           dapat mengindikasikan transisi tajam yang tidak alami atau perpindahan konten yang mendadak.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Aliran Optik mengukur 'gerakan' antara dua frame. Bayangkan 
-                          melacak gerakan objek atau kamera dari satu frame ke frame berikutnya. Dalam video asli, 
-                          gerakan biasanya mulus dan konsisten. Lonjakan besar berarti gerakan tiba-tiba yang tidak wajar, 
-                          seperti orang yang 'melompat' posisinya tanpa gerakan perantara - tanda potensial adanya 
-                          pemotongan atau penyuntingan.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> Aliran Optik mengukur 'gerakan' antara dua frame. Bayangkan
+                          melacak gerakan objek atau kamera dari satu frame ke frame berikutnya. Dalam video asli,
+                          gerakan biasanya mulus dan konsisten. Lonjakan besar berarti gerakan tiba-tiba yang tidak wajar,
+                          seperti orang yang 'melompat' posisinya tanpa gerakan perantara - tanda potensial adanya
+                          pemotongan atau penyuntingan.""")
     
     # Tampilkan plot Optical Flow
     if result.plots.get('optical_flow_temporal') and Path(result.plots['optical_flow_temporal']).exists():
@@ -3352,10 +3382,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
         story.append(Paragraph(f"Analisis ini membandingkan video yang diperiksa dengan video baseline yang dianggap sebagai referensi asli. Sistem mendeteksi <b>{insertion_events_count} peristiwa penyisipan</b> yang menunjukkan adanya frame-frame yang tidak ada dalam video baseline.", styles['Justify']))
         
         # Penjelasan untuk orang awam
-        story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Ini seperti membandingkan dua dokumen untuk menemukan kalimat 
-                             yang ditambahkan. Sistem membandingkan setiap frame video dengan video baseline (asli) untuk 
-                             menemukan frame yang 'baru' dan tidak seharusnya ada di sana. Ini adalah bukti kuat adanya 
-                             manipulasi karena frame-frame tersebut jelas ditambahkan setelah perekaman asli.""", styles['SimplifiedExplanation']))
+        add_simple("""<b>Penjelasan Sederhana:</b> Ini seperti membandingkan dua dokumen untuk menemukan kalimat
+                             yang ditambahkan. Sistem membandingkan setiap frame video dengan video baseline (asli) untuk
+                             menemukan frame yang 'baru' dan tidak seharusnya ada di sana. Ini adalah bukti kuat adanya
+                             manipulasi karena frame-frame tersebut jelas ditambahkan setelah perekaman asli.""")
 
     # Distribusi metrik sebagai histogram
     if result.plots.get('metrics_histograms') and Path(result.plots['metrics_histograms']).exists():
@@ -3429,7 +3459,7 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
             
             # Penjelasan lebih kaya
             story.append(Paragraph("<b>Penjelasan Umum:</b>", styles['Normal']))
-            story.append(Paragraph(get_anomaly_explanation(event_type), styles['SimplifiedExplanation']))
+            add_simple(get_anomaly_explanation(event_type))
             story.append(Paragraph("<b>Implikasi Forensik:</b>", styles['Normal']))
             story.append(Paragraph(get_anomaly_implication(event_type), styles['HighlightBox']))
 
@@ -3441,10 +3471,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                     if isinstance(exp_data, dict):
                         story.append(Paragraph(f"<b>{exp_type.replace('_', ' ').title()}:</b>", styles['Normal']))
                         if exp_data.get('simple_explanation'):
-                            story.append(Paragraph(f"<i>Penjelasan Sederhana:</i> {exp_data['simple_explanation']}", styles['SimplifiedExplanation']))
+                            add_simple(f"<i>Penjelasan Sederhana:</i> {exp_data['simple_explanation']}")
                             story.append(Spacer(1, 4))
                         if exp_data.get('technical_explanation'):
-                            story.append(Paragraph(f"<i>Penjelasan Teknis:</i> {exp_data['technical_explanation']}", styles['TechnicalExplanation']))
+                            add_technical(f"<i>Penjelasan Teknis:</i> {exp_data['technical_explanation']}")
                             story.append(Spacer(1, 4))
 
             # Tabel bukti teknis
@@ -3601,10 +3631,10 @@ def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, ba
                           potensial terjadi dalam video.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Bayangkan ini seperti peta yang menunjukkan 'lokasi masalah' 
-                          dalam video. Alih-alih hanya menunjukkan frame individual, peta ini mengelompokkan frame-frame 
-                          bermasalah yang berdekatan menjadi 'kejadian' yang lebih bermakna - seperti menandai 
-                          halaman-halaman bermasalah dalam buku, bukan hanya kata-kata individual.""", styles['SimplifiedExplanation']))
+    add_simple("""<b>Penjelasan Sederhana:</b> Bayangkan ini seperti peta yang menunjukkan 'lokasi masalah'
+                          dalam video. Alih-alih hanya menunjukkan frame individual, peta ini mengelompokkan frame-frame
+                          bermasalah yang berdekatan menjadi 'kejadian' yang lebih bermakna - seperti menandai
+                          halaman-halaman bermasalah dalam buku, bukan hanya kata-kata individual.""")
     
     # Tampilkan peta lokalisasi
     if result.plots.get('enhanced_localization_map') and Path(result.plots['enhanced_localization_map']).exists():
