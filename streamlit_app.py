@@ -768,7 +768,13 @@ if selected_tab == "Analisis Baru":
                         fv.run_tahap_4_visualisasi_dan_penilaian(result, tmpdir_path)
 
                         st.write("Tahap 5: Menyusun Laporan PDF & Validasi...")
-                        fv.run_tahap_5_pelaporan_dan_validasi(result, tmpdir_path, baseline_result)
+                        fv.run_tahap_5_pelaporan_dan_validasi(
+                            result,
+                            tmpdir_path,
+                            baseline_result,
+                            include_simple=show_simple_explanations,
+                            include_technical=show_technical_details,
+                        )
                         
                         status.update(label="✅ Analisis 5 Tahap Forensik Berhasil!", state="complete", expanded=False)
                 
