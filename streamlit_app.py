@@ -410,7 +410,6 @@ def display_history_detail(entry_id):
     with col1:
         st.header(f"Detail Analisis: {entry.get('video_name', 'N/A')}")
         st.caption(f"Dianalisis pada: {format_timestamp(entry.get('timestamp'))} | Hash Preservasi: {entry.get('preservation_hash', 'N/A')[:20]}...")
-        st.markdown("_Hasil ini bersifat otomatis berdasarkan temuan digital dan tetap memerlukan verifikasi manual sesuai metodologi DFRWS._")
     with col2:
         if st.button("⬅️ Kembali", use_container_width=True):
             st.session_state.selected_history_id = None
@@ -769,7 +768,13 @@ if selected_tab == "Analisis Baru":
                         fv.run_tahap_4_visualisasi_dan_penilaian(result, tmpdir_path)
 
                         st.write("Tahap 5: Menyusun Laporan PDF & Validasi...")
-                        fv.run_tahap_5_pelaporan_dan_validasi(result, tmpdir_path, baseline_result)
+                        fv.run_tahap_5_pelaporan_dan_validasi(
+                            result,
+                            tmpdir_path,
+                            baseline_result,
+                            include_simple=show_simple_explanations,
+                            include_technical=show_technical_details,
+                        )
                         
                         status.update(label="✅ Analisis 5 Tahap Forensik Berhasil!", state="complete", expanded=False)
                 
