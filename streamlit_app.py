@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import time
 from history_manager import HistoryManager
+from export_utils import add_export_buttons
 
 st.set_page_config(
     page_title="VIFA-Pro | Dashboard Forensik Video",
@@ -964,8 +965,62 @@ if selected_tab == "Analisis Baru":
                     with tabs[5]:
                         st.header("Hasil Tahap 5: Laporan & Validasi")
                         st.info("Unduh laporan PDF lengkap untuk dokumentasi atau sebagai lampiran bukti digital.", icon="📄")
-                        if hasattr(result, 'pdf_report_data') and result.pdf_report_data:
-                            st.download_button(label="📥 Unduh Laporan PDF Lengkap", data=result.pdf_report_data, file_name=result.pdf_report_path.name, mime="application/pdf", use_container_width=True, type="primary")
+
+                        # ===== GANTI BLOK INI =====
+                        
+                        # Cek apakah PDF berhasil dibuat
+                        if hasattr(result, 'pdf_report_path') and result.pdf_report_path and Path(result.pdf_report_path).exists():
+                            # PDF ada, tampilkan semua tombol unduh
+                            col1, col2, col3 = st.columns(3)
+
+                            # 1. Tombol PDF
+                            with col1:
+                                with open(result.pdf_report_path, "rb") as pdf_file:
+                                    st.download_button(
+                                        label="📄 Download PDF",
+                                        data=pdf_file.read(),
+                                        file_name=Path(result.pdf_report_path).name,
+                                        mime="application/pdf",
+                                        use_container_width=True
+                                    )
+                            
+                            # 2. Tombol PNG
+                            with col2:
+                                if hasattr(result, 'png_export_paths') and result.png_export_paths:
+                                    with st.popover("🖼️ Unduh Halaman PNG", use_container_width=True):
+                                        for png_path_str in result.png_export_paths:
+                                            png_path = Path(png_path_str)
+                                            if png_path.exists():
+                                                with open(png_path, "rb") as png_file:
+                                                    st.download_button(
+                                                        label=f"Unduh {png_path.name}",
+                                                        data=png_file.read(),
+                                                        file_name=png_path.name,
+                                                        mime="image/png"
+                                                    )
+                                else:
+                                    st.warning("PNG tidak dibuat. Periksa dependensi (`pdf2image` + Poppler).", icon="⚠️")
+
+                            # 3. Tombol DOCX
+                            with col3:
+                                if hasattr(result, 'docx_report_path') and result.docx_report_path:
+                                    docx_path = Path(result.docx_report_path)
+                                    if docx_path.exists():
+                                        with open(docx_path, "rb") as docx_file:
+                                            st.download_button(
+                                                label="📝 Download DOCX",
+                                                data=docx_file.read(),
+                                                file_name=docx_path.name,
+                                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                                use_container_width=True
+                                            )
+                                else:
+                                    st.warning("DOCX tidak dibuat. Periksa dependensi `python-docx`.", icon="⚠️")
+
+                        else:
+                            st.error("Gagal membuat laporan PDF utama. Periksa log di konsol untuk detail error.", icon="❌")
+                        # ===== AKHIR DARI BLOK PENGGANTI =====
+
                         st.subheader("✅ Validasi Proses Analisis")
                         validation_data = {"File Bukti": Path(result.video_path).name, "Hash SHA-256": result.preservation_hash, "Waktu Analisis (UTC)": datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         if hasattr(result, 'forensic_evidence_matrix') and result.forensic_evidence_matrix.get('conclusion'):

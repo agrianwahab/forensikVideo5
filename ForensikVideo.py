@@ -57,19 +57,24 @@ from pathlib import Path
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Optional, Any
 
-# Dimensi kertas F5 (≈16.5 cm × 21.5 cm) dalam satuan poin
-F5 = (467.72, 609.45)
-
 # Pemeriksaan Dependensi Awal
 try:
     import cv2
     import imagehash
     import numpy as np
     from PIL import Image, ImageChops, ImageEnhance, ImageDraw, ImageFont
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, letter
+    from reportlab.lib.units import mm
+
+    # Definisi ukuran F5 (148 x 210 mm)
+    F5 = (148*mm, 210*mm)
+
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as PlatypusImage, Table, TableStyle, PageBreak
+    try:
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as PlatypusImage, Table, TableStyle, PageBreak
+    except ImportError as e:
+        PlatypusImage = None
     from reportlab.lib import colors
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -78,14 +83,22 @@ try:
     from skimage.metrics import structural_similarity as ssim
     from scipy import stats
     import seaborn as sns
+
+    # Import untuk ekspor DOCX
+    try:
+        from docx import Document
+        import docx
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.style import WD_STYLE_TYPE
+        DOCX_AVAILABLE = True
+    except ImportError:
+        DOCX_AVAILABLE = False
+        print("Warning: python-docx tidak terinstall. Fitur ekspor DOCX tidak tersedia.")
+
 except ImportError as e:
     print(f"Error: Dependensi penting tidak ditemukan -> {e}")
     sys.exit(1)
-
-
-# --- FIX START
-PlatyplusImage = PlatypusImage
-# --- FIX END
 
 
 ###############################################################################
@@ -100,30 +113,27 @@ CONFIG = {
     "OPTICAL_FLOW_Z_THRESH": 5.0,
     "DUPLICATION_SSIM_CONFIRM": 0.80,
     "SIFT_MIN_MATCH_COUNT": 10,
-    "USE_AUTO_THRESHOLDS": True,
-    # Nilai default jika pengguna menonaktifkan mode otomatis
-    "SSIM_USER_THRESHOLD": 0.30,
-    "Z_USER_THRESHOLD": 5.0
+    "USE_AUTO_THRESHOLDS": True
 }
 
 class Icons:
-    IDENTIFICATION="🔍"; PRESERVATION="🛡️"; COLLECTION="📥"; EXAMINATION="🔬";
-    ANALYSIS="📈"; REPORTING="📄"; SUCCESS="✅"; ERROR="❌"; INFO="ℹ️";
-    CONFIDENCE_LOW="🟩"; CONFIDENCE_MED="🟨"; CONFIDENCE_HIGH="🟧"; CONFIDENCE_VHIGH="🟥"
+    IDENTIFICATION = "🔍"
+    PRESERVATION = "🛡️"
+    COLLECTION = "📥"
+    EXAMINATION = "🔬"
+    ANALYSIS = "📈"
+    REPORTING = "📄"
+    SUCCESS = "✅"
+    ERROR = "❌"
+    INFO = "ℹ️"
+    CONFIDENCE_LOW = "🟩"
+    CONFIDENCE_MED = "🟨"
+    CONFIDENCE_HIGH = "🟧"
+    CONFIDENCE_VHIGH = "🟥"
 
 # Fungsi log yang dienkapsulasi untuk output ke konsol dan UI Streamlit
 def log(message: str):
     print(message, file=sys.stdout) # Menggunakan stdout asli untuk logging
-
-def adaptive_thresholds(fps: int, motion_level: float) -> tuple[float, float]:
-    """Kalkulasi sederhana ambang adaptif berdasarkan FPS dan level gerakan."""
-    # Ambang SSIM sedikit dinaikkan pada fps lebih tinggi
-    ssim_base = 0.30
-    if fps > 24:
-        ssim_base += 0.02
-    # Ambang z-score meningkat sesuai level gerakan pada video
-    z_base = 4.0 + (motion_level * 2)
-    return round(ssim_base, 2), round(z_base, 2)
 
 def print_stage_banner(stage_number: int, stage_name: str, icon: str, description: str):
     width=80
@@ -2198,12 +2208,11 @@ def run_tahap_3_sintesis_bukti(result: AnalysisResult, out_dir: Path):
             log(f"     - MAD (Median Absolute Deviation): {mad_flow:.3f}")
 
             # Deteksi anomali dengan Z-score
-            z_thresh = CONFIG["OPTICAL_FLOW_Z_THRESH"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("Z_USER_THRESHOLD", CONFIG["OPTICAL_FLOW_Z_THRESH"])
             for f in frames:
                 if f.optical_flow_mag is not None and f.optical_flow_mag > 0:
                     if mad_flow != 0:
                         z_score = 0.6745 * (f.optical_flow_mag - median_flow) / mad_flow
-                        if abs(z_score) > z_thresh:
+                        if abs(z_score) > CONFIG["OPTICAL_FLOW_Z_THRESH"]:
                             f.evidence_obj.reasons.append("Lonjakan Aliran Optik")
                             f.evidence_obj.metrics["optical_flow_z_score"] = round(z_score, 2)
 
@@ -2252,8 +2261,7 @@ def run_tahap_3_sintesis_bukti(result: AnalysisResult, out_dir: Path):
             ssim_drop = f_prev.ssim_to_prev - f_curr.ssim_to_prev
 
             # Deteksi penurunan drastis
-            ssim_thresh = CONFIG["SSIM_DISCONTINUITY_DROP"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("SSIM_USER_THRESHOLD", CONFIG["SSIM_DISCONTINUITY_DROP"])
-            if ssim_drop > ssim_thresh:
+            if ssim_drop > CONFIG["SSIM_DISCONTINUITY_DROP"]:
                 f_curr.evidence_obj.reasons.append("Penurunan Drastis SSIM")
                 f_curr.evidence_obj.metrics["ssim_drop"] = round(ssim_drop, 4)
 
@@ -2905,8 +2913,7 @@ def run_tahap_4_visualisasi_dan_penilaian(result: AnalysisResult, out_dir: Path)
             median_flow = np.median(flow_mags_for_z)
             mad_flow = stats.median_abs_deviation(flow_mags_for_z)
             mad_flow = 1e-9 if mad_flow == 0 else mad_flow
-            z_thresh = CONFIG["OPTICAL_FLOW_Z_THRESH"] if CONFIG.get("USE_AUTO_THRESHOLDS", True) else CONFIG.get("Z_USER_THRESHOLD", CONFIG["OPTICAL_FLOW_Z_THRESH"])
-            threshold_mag_upper = (z_thresh / 0.6745) * mad_flow + median_flow
+            threshold_mag_upper = (CONFIG["OPTICAL_FLOW_Z_THRESH"] / 0.6745) * mad_flow + median_flow
             plt.axhline(y=threshold_mag_upper, color='blue', linestyle='--', linewidth=1, label=f'Ambang Batas Atas Z-score')
 
         plt.title('Perubahan Rata-rata Magnitudo Aliran Optik', fontsize=14, weight='bold')
@@ -3022,18 +3029,19 @@ def calculate_event_severity(event: dict) -> float:
     return severity
 
 # --- TAHAP 5: PENYUSUNAN LAPORAN & VALIDASI FORENSIK ---
-def run_tahap_5_pelaporan_dan_validasi(
-    result: AnalysisResult,
-    out_dir: Path,
-    baseline_result: AnalysisResult | None = None,
-    include_simple: bool = True,
-    include_technical: bool = True,
-):
+def run_tahap_5_pelaporan_dan_validasi(result: AnalysisResult, out_dir: Path, baseline_result: AnalysisResult | None = None, include_simple: bool = True, include_technical: bool = True):
     print_stage_banner(5, "Penyusunan Laporan & Validasi Forensik", Icons.REPORTING,
-                       "Menghasilkan laporan PDF naratif yang komprehensif dengan fokus pada Analisis FERM.")
+                       "Menghasilkan laporan PDF, PNG, dan DOCX dengan fokus pada Analisis FERM.")
 
     pdf_path = out_dir / f"laporan_forensik_{Path(result.video_path).stem}.pdf"
-
+    from reportlab.lib.pagesizes import A4 # Hapus F5 dari sini
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as PlatypusImage, Table, TableStyle, PageBreak
+    from reportlab.lib import colors
+    import traceback
+    
+    F5 = (148*mm, 210*mm)
     def get_encoder_info(metadata: dict) -> str:
         return metadata.get('Video Stream', {}).get('Encoder', 'N/A')
 
@@ -3097,59 +3105,51 @@ def run_tahap_5_pelaporan_dan_validasi(
         }
         return explanations.get(phase, "Penjelasan tidak tersedia untuk tahap ini.")
 
-    # Gunakan ukuran kertas F5 dengan margin sesuai permintaan (kiri/atas 4 cm,
-    # kanan/bawah 3 cm). Nilai dikonversi ke satuan poin (1 cm ≈ 28.35 pt).
-    doc = SimpleDocTemplate(
-        str(pdf_path),
-        pagesize=F5,
-        topMargin=113.4,    # 4 cm
-        bottomMargin=85.0,  # 3 cm
-        leftMargin=113.4,   # 4 cm
-        rightMargin=85.0    # 3 cm
-    )
+    doc = SimpleDocTemplate(str(pdf_path), pagesize=F5,
+                          topMargin=10*mm, bottomMargin=10*mm,
+                          leftMargin=10*mm, rightMargin=10*mm)
     styles = getSampleStyleSheet()
 
-    # Menambahkan style baru untuk laporan yang lebih profesional
+    # Menambahkan style baru untuk laporan yang lebih profesional dengan ukuran font yang disesuaikan untuk F5
     if 'Code' not in styles:
-        styles.add(ParagraphStyle(name='Code', fontName='Courier', fontSize=8, leading=10, wordWrap='break'))
+        styles.add(ParagraphStyle(name='Code', fontName='Courier', fontSize=7, leading=9, wordWrap='break'))
     if 'SubTitle' not in styles:
-        styles.add(ParagraphStyle(name='SubTitle', parent=styles['h2'], fontSize=12, textColor=colors.darkslategray))
+        styles.add(ParagraphStyle(name='SubTitle', parent=styles['h2'], fontSize=11, textColor=colors.darkslategray))
     if 'Justify' not in styles:
-        styles.add(ParagraphStyle(name='Justify', parent=styles['Normal'], alignment=4)) # Justify
+        styles.add(ParagraphStyle(name='Justify', parent=styles['Normal'], alignment=4, fontSize=9, leading=11)) # Justify
     if 'H3-Box' not in styles:
-        styles.add(ParagraphStyle(name='H3-Box', parent=styles['h3'], backColor=colors.lightgrey, padding=4, leading=14, leftIndent=4, borderPadding=2, textColor=colors.black))
+        styles.add(ParagraphStyle(name='H3-Box', parent=styles['h3'], fontSize=10, backColor=colors.lightgrey, padding=4, leading=12, leftIndent=4, borderPadding=2, textColor=colors.black))
     if 'ExplanationBox' not in styles:
-        styles.add(ParagraphStyle(name='ExplanationBox', parent=styles['Normal'], backColor='#FFF8DC', borderColor='#CCCCCC', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10))
+        styles.add(ParagraphStyle(name='ExplanationBox', parent=styles['Normal'], fontSize=8, backColor='#FFF8DC', borderColor='#CCCCCC', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8))
     if 'DisclaimerBox' not in styles:
-        styles.add(ParagraphStyle(name='DisclaimerBox', parent=styles['Normal'], backColor='#F8F9FA', borderColor='#D1D5DB', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10, textColor='#4B5563', fontSize=9))
+        styles.add(ParagraphStyle(name='DisclaimerBox', parent=styles['Normal'], fontSize=8, backColor='#F8F9FA', borderColor='#D1D5DB', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8, textColor='#4B5563'))
     if 'HighlightBox' not in styles:
-        styles.add(ParagraphStyle(name='HighlightBox', parent=styles['Normal'], backColor='#E8F4F8', borderColor='#B8E0E8', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10))
+        styles.add(ParagraphStyle(name='HighlightBox', parent=styles['Normal'], fontSize=8, backColor='#E8F4F8', borderColor='#B8E0E8', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8))
     if 'MethodologyBox' not in styles:
-        styles.add(ParagraphStyle(name='MethodologyBox', parent=styles['Normal'], backColor='#F0F7FF', borderColor='#B9D3FA', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10))
+        styles.add(ParagraphStyle(name='MethodologyBox', parent=styles['Normal'], fontSize=8, backColor='#F0F7FF', borderColor='#B9D3FA', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8))
     if 'SimplifiedExplanation' not in styles:
-        styles.add(ParagraphStyle(name='SimplifiedExplanation', parent=styles['Normal'], backColor='#E6F6E8', borderColor='#C3E6CB', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10, fontSize=10))
+        styles.add(ParagraphStyle(name='SimplifiedExplanation', parent=styles['Normal'], fontSize=9, backColor='#E6F6E8', borderColor='#C3E6CB', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8))
     if 'TechnicalExplanation' not in styles:
-        styles.add(ParagraphStyle(name='TechnicalExplanation', parent=styles['Normal'], backColor='#F0F2F6', borderColor='#D1D5DB', borderWidth=1, borderPadding=8, leftIndent=10, rightIndent=10, fontName='Courier', fontSize=9))
+        styles.add(ParagraphStyle(name='TechnicalExplanation', parent=styles['Normal'], fontSize=8, backColor='#F0F2F6', borderColor='#D1D5DB', borderWidth=1, borderPadding=6, leftIndent=8, rightIndent=8, fontName='Courier'))
     if 'SectionHeader' not in styles:
-        styles.add(ParagraphStyle(name='SectionHeader', parent=styles['h3'], fontSize=14, textColor=colors.darkblue, spaceBefore=12, spaceAfter=6))
+        styles.add(ParagraphStyle(name='SectionHeader', parent=styles['h3'], fontSize=12, textColor=colors.darkblue, spaceBefore=10, spaceAfter=5))
     if 'Caption' not in styles:
-        styles.add(ParagraphStyle(name='Caption', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=9, alignment=1, textColor=colors.darkslategray))
+        styles.add(ParagraphStyle(name='Caption', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=8, alignment=1, textColor=colors.darkslategray))
+
+    # Update styles yang sudah ada untuk ukuran F5
+    styles['Normal'].fontSize = 9
+    styles['Normal'].leading = 11
+    styles['h1'].fontSize = 16
+    styles['h2'].fontSize = 13
+    styles['h3'].fontSize = 11
 
     story = []
     def header_footer(canvas, doc):
         canvas.saveState()
         canvas.setFont('Helvetica', 8)
         canvas.drawString(30, 30, f"Laporan VIFA-Pro | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        canvas.drawRightString(F5[0] - 30, 30, f"Halaman {doc.page}")
+        canvas.drawRightString(A4[0] - 30, 30, f"Halaman {doc.page}")
         canvas.restoreState()
-
-    def add_simple(text: str):
-        if include_simple:
-            story.append(Paragraph(text, styles['SimplifiedExplanation']))
-
-    def add_technical(text: str):
-        if include_technical:
-            story.append(Paragraph(text, styles['TechnicalExplanation']))
 
     # --- HALAMAN SAMPUL ---
     story.append(Paragraph("Laporan Analisis Forensik Video", styles['h1']))
@@ -3221,7 +3221,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         dfrws_data.append([f"<b>{phase}. {get_dfrws_phase_explanation(phase).split('</b>')[0]}</b>", 
                          get_dfrws_phase_explanation(phase).split("analisis ini,")[1].strip()])
     
-    story.append(Table(dfrws_data, colWidths=[150, 375], style=TableStyle([
+    story.append(Table(dfrws_data, colWidths=[100, 280], style=TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
@@ -3263,7 +3263,7 @@ def run_tahap_5_pelaporan_dan_validasi(
     for category, items in result.metadata.items():
         if items and len(items) > 1: table_style_cmds.append(('SPAN', (0, current_row), (0, current_row + len(items) - 1)))
         current_row += len(items)
-    story.append(Table(metadata_table_data, colWidths=[80, 150, 290], style=TableStyle(table_style_cmds)))
+    story.append(Table(metadata_table_data, colWidths=[60, 100, 220], style=TableStyle(table_style_cmds)))
     
     # Tampilkan hash preservasi secara jelas
     story.append(Spacer(1, 8))
@@ -3277,14 +3277,14 @@ def run_tahap_5_pelaporan_dan_validasi(
                           dan memungkinkan perbandingan yang lebih andal antara frame.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> Bayangkan Anda memiliki foto yang sebagian terlalu gelap dan sebagian terlalu terang.
-                          Normalisasi adalah seperti 'menyeimbangkan' foto tersebut agar semua detail terlihat jelas,
-                          seperti penyesuaian otomatis di aplikasi foto. Ini membuat sistem dapat 'melihat' lebih baik
-                          perbedaan antara frame-frame video.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Bayangkan Anda memiliki foto yang sebagian terlalu gelap dan sebagian terlalu terang. 
+                          Normalisasi adalah seperti 'menyeimbangkan' foto tersebut agar semua detail terlihat jelas, 
+                          seperti penyesuaian otomatis di aplikasi foto. Ini membuat sistem dapat 'melihat' lebih baik 
+                          perbedaan antara frame-frame video.""", styles['SimplifiedExplanation']))
     
     # Tampilkan contoh frame yang dinormalisasi
     if result.frames and result.frames[0].img_path_comparison and Path(result.frames[0].img_path_comparison).exists():
-        story.append(PlatypusImage(result.frames[0].img_path_comparison, width=520, height=146, kind='proportional'))
+        story.append(PlatypusImage(result.frames[0].img_path_comparison, width=380, height=107, kind='proportional'))
         story.append(Paragraph("Perbandingan frame asli (kiri) dengan frame yang telah dinormalisasi (kanan). Normalisasi meningkatkan kontras dan detail visual untuk analisis yang lebih konsisten.", styles['Caption']))
     story.append(Spacer(1, 12))
 
@@ -3295,14 +3295,14 @@ def run_tahap_5_pelaporan_dan_validasi(
                           mendadak dalam keanggotaan klaster dapat menandakan diskontinuitas video.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> K-Means bekerja seperti mengelompokkan foto-foto berdasarkan warna dominannya.
-                          Misalnya, foto pantai dengan banyak biru dan putih akan masuk satu kelompok, sementara foto hutan dengan
-                          dominasi hijau akan masuk kelompok lain. Jika dalam video terjadi perpindahan tiba-tiba dari satu kelompok
-                          warna ke kelompok lain, ini mungkin menandakan adanya 'potongan' atau editing.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> K-Means bekerja seperti mengelompokkan foto-foto berdasarkan warna dominannya. 
+                          Misalnya, foto pantai dengan banyak biru dan putih akan masuk satu kelompok, sementara foto hutan dengan 
+                          dominasi hijau akan masuk kelompok lain. Jika dalam video terjadi perpindahan tiba-tiba dari satu kelompok 
+                          warna ke kelompok lain, ini mungkin menandakan adanya 'potongan' atau editing.""", styles['SimplifiedExplanation']))
     
     # Tampilkan distribusi K-Means
     if result.kmeans_artifacts.get('distribution_plot_path') and Path(result.kmeans_artifacts['distribution_plot_path']).exists():
-        story.append(PlatypusImage(result.kmeans_artifacts['distribution_plot_path'], width=400, height=200, kind='proportional'))
+        story.append(PlatypusImage(result.kmeans_artifacts['distribution_plot_path'], width=320, height=117, kind='proportional'))
         story.append(Paragraph("Distribusi jumlah frame untuk setiap klaster warna yang teridentifikasi oleh algoritma K-Means.", styles['Caption']))
     story.append(Spacer(1, 12))
     
@@ -3311,14 +3311,14 @@ def run_tahap_5_pelaporan_dan_validasi(
     for cluster_info in result.kmeans_artifacts.get('clusters', []):
         story.append(Paragraph(f"<b>Klaster {cluster_info['id']}</b> ({cluster_info['count']} frame)", styles['H3-Box']))
 
-        palette_img = PlatyplusImage(cluster_info['palette_path'], width=200, height=50) if cluster_info.get('palette_path') and Path(cluster_info['palette_path']).exists() else Paragraph("N/A", styles['Normal'])
-        samples_img = PlatyplusImage(cluster_info['samples_montage_path'], width=300, height=54) if cluster_info.get('samples_montage_path') and Path(cluster_info['samples_montage_path']).exists() else Paragraph("N/A", styles['Normal'])
+        palette_img = PlatypusImage(cluster_info['palette_path'], width=150, height=38) if cluster_info.get('palette_path') and Path(cluster_info['palette_path']).exists() else Paragraph("N/A", styles['Normal'])
+        samples_img = PlatypusImage(cluster_info['samples_montage_path'], width=230, height=41) if cluster_info.get('samples_montage_path') and Path(cluster_info['samples_montage_path']).exists() else Paragraph("N/A", styles['Normal'])
 
         cluster_data = [[Paragraph("Palet Warna Dominan", styles['Normal']), Paragraph("Contoh Frame (Asli)", styles['Normal'])],
                         [palette_img, samples_img]]
-        story.append(Table(cluster_data, colWidths=[215, 310], style=TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (-1,-1), 'CENTER')])))
+        story.append(Table(cluster_data, colWidths=[150, 230], style=TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (-1,-1), 'CENTER')])))
         story.append(Spacer(1, 6))
-        
+
         # Interpretasi klaster
         if cluster_info.get('count') > 0:
             proportion = cluster_info['count'] / sum(c.get('count', 0) for c in result.kmeans_artifacts.get('clusters', []))
@@ -3340,14 +3340,14 @@ def run_tahap_5_pelaporan_dan_validasi(
                           dapat mengindikasikan perubahan adegan yang tajam atau diskontinuitas dalam aliran visual.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> Grafik ini menunjukkan 'kelompok warna' untuk setiap frame dalam
-                          video. Dalam video normal, perubahan kelompok biasanya terjadi secara bertahap atau pada momen
-                          perpindahan adegan yang jelas. Lompatan tiba-tiba yang tidak teratur bisa menandakan bahwa
-                          sebagian video telah dipotong atau ditambahkan.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Grafik ini menunjukkan 'kelompok warna' untuk setiap frame dalam 
+                          video. Dalam video normal, perubahan kelompok biasanya terjadi secara bertahap atau pada momen 
+                          perpindahan adegan yang jelas. Lompatan tiba-tiba yang tidak teratur bisa menandakan bahwa 
+                          sebagian video telah dipotong atau ditambahkan.""", styles['SimplifiedExplanation']))
     
     # Tampilkan plot K-Means temporal
     if result.plots.get('kmeans_temporal') and Path(result.plots['kmeans_temporal']).exists():
-        story.append(PlatypusImage(result.plots['kmeans_temporal'], width=520, height=195, kind='proportional'))
+        story.append(PlatypusImage(result.plots['kmeans_temporal'], width=380, height=142, kind='proportional'))
         story.append(Paragraph("Visualisasi temporal klaster K-Means. Garis vertikal merah menandakan perpindahan klaster warna yang dapat mengindikasikan perubahan adegan.", styles['Caption']))
     story.append(Spacer(1, 12))
 
@@ -3358,14 +3358,14 @@ def run_tahap_5_pelaporan_dan_validasi(
                           menjadi tanda diskontinuitas atau manipulasi.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> SSIM adalah seperti mengukur seberapa mirip dua gambar berurutan.
-                          Dalam video normal, frame berurutan biasanya sangat mirip, dengan perubahan kecil karena pergerakan.
-                          Jika tiba-tiba dua frame berurutan sangat berbeda (nilai SSIM turun drastis), ini bisa menandakan
-                          ada 'lompatan' tidak wajar dalam video - seperti halaman yang hilang dari buku.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> SSIM adalah seperti mengukur seberapa mirip dua gambar berurutan. 
+                          Dalam video normal, frame berurutan biasanya sangat mirip, dengan perubahan kecil karena pergerakan. 
+                          Jika tiba-tiba dua frame berurutan sangat berbeda (nilai SSIM turun drastis), ini bisa menandakan 
+                          ada 'lompatan' tidak wajar dalam video - seperti halaman yang hilang dari buku.""", styles['SimplifiedExplanation']))
     
     # Tampilkan plot SSIM
     if result.plots.get('ssim_temporal') and Path(result.plots['ssim_temporal']).exists():
-        story.append(PlatypusImage(result.plots['ssim_temporal'], width=520, height=195, kind='proportional'))
+        story.append(PlatypusImage(result.plots['ssim_temporal'], width=380, height=142, kind='proportional'))
         story.append(Paragraph("Grafik SSIM sepanjang video. Titik merah menandakan lokasi di mana terjadi penurunan SSIM yang mencurigakan.", styles['Caption']))
     story.append(Spacer(1, 12))
 
@@ -3375,15 +3375,15 @@ def run_tahap_5_pelaporan_dan_validasi(
                           dapat mengindikasikan transisi tajam yang tidak alami atau perpindahan konten yang mendadak.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> Aliran Optik mengukur 'gerakan' antara dua frame. Bayangkan
-                          melacak gerakan objek atau kamera dari satu frame ke frame berikutnya. Dalam video asli,
-                          gerakan biasanya mulus dan konsisten. Lonjakan besar berarti gerakan tiba-tiba yang tidak wajar,
-                          seperti orang yang 'melompat' posisinya tanpa gerakan perantara - tanda potensial adanya
-                          pemotongan atau penyuntingan.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Aliran Optik mengukur 'gerakan' antara dua frame. Bayangkan 
+                          melacak gerakan objek atau kamera dari satu frame ke frame berikutnya. Dalam video asli, 
+                          gerakan biasanya mulus dan konsisten. Lonjakan besar berarti gerakan tiba-tiba yang tidak wajar, 
+                          seperti orang yang 'melompat' posisinya tanpa gerakan perantara - tanda potensial adanya 
+                          pemotongan atau penyuntingan.""", styles['SimplifiedExplanation']))
     
     # Tampilkan plot Optical Flow
     if result.plots.get('optical_flow_temporal') and Path(result.plots['optical_flow_temporal']).exists():
-        story.append(PlatypusImage(result.plots['optical_flow_temporal'], width=520, height=195, kind='proportional'))
+        story.append(PlatypusImage(result.plots['optical_flow_temporal'], width=380, height=142, kind='proportional'))
         story.append(Paragraph("Grafik magnitudo Aliran Optik sepanjang video. Titik hijau menandakan lokasi dengan lonjakan gerakan yang tidak wajar.", styles['Caption']))
     story.append(Spacer(1, 12))
 
@@ -3394,10 +3394,10 @@ def run_tahap_5_pelaporan_dan_validasi(
         story.append(Paragraph(f"Analisis ini membandingkan video yang diperiksa dengan video baseline yang dianggap sebagai referensi asli. Sistem mendeteksi <b>{insertion_events_count} peristiwa penyisipan</b> yang menunjukkan adanya frame-frame yang tidak ada dalam video baseline.", styles['Justify']))
         
         # Penjelasan untuk orang awam
-        add_simple("""<b>Penjelasan Sederhana:</b> Ini seperti membandingkan dua dokumen untuk menemukan kalimat
-                             yang ditambahkan. Sistem membandingkan setiap frame video dengan video baseline (asli) untuk
-                             menemukan frame yang 'baru' dan tidak seharusnya ada di sana. Ini adalah bukti kuat adanya
-                             manipulasi karena frame-frame tersebut jelas ditambahkan setelah perekaman asli.""")
+        story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Ini seperti membandingkan dua dokumen untuk menemukan kalimat 
+                             yang ditambahkan. Sistem membandingkan setiap frame video dengan video baseline (asli) untuk 
+                             menemukan frame yang 'baru' dan tidak seharusnya ada di sana. Ini adalah bukti kuat adanya 
+                             manipulasi karena frame-frame tersebut jelas ditambahkan setelah perekaman asli.""", styles['SimplifiedExplanation']))
 
     # Distribusi metrik sebagai histogram
     if result.plots.get('metrics_histograms') and Path(result.plots['metrics_histograms']).exists():
@@ -3405,7 +3405,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         story.append(Paragraph("""Histogram di bawah ini menunjukkan distribusi statistik dari nilai SSIM dan Aliran Optik 
                              di seluruh video. Distribusi ini membantu mengidentifikasi nilai-nilai yang menonjol dari 
                              pola normal, yang dapat mengindikasikan anomali.""", styles['Justify']))
-        story.append(PlatypusImage(result.plots['metrics_histograms'], width=520, height=150, kind='proportional'))
+        story.append(PlatypusImage(result.plots['metrics_histograms'], width=380, height=110, kind='proportional'))
         story.append(Paragraph("Histogram distribusi nilai SSIM (kiri) dan Aliran Optik (kanan). Nilai yang sangat jauh dari distribusi utama sering mengindikasikan anomali.", styles['Caption']))
 
     story.append(PageBreak())
@@ -3432,7 +3432,7 @@ def run_tahap_5_pelaporan_dan_validasi(
             ["Kluster Temporal Anomali", str(result.statistical_summary['temporal_clusters']), "Jumlah kelompok anomali yang terjadi berdekatan"],
             ["Rata-rata Anomali per Kluster", f"{result.statistical_summary.get('average_anomalies_per_cluster', 0):.1f}", "Rata-rata jumlah anomali dalam satu kelompok"]
         ]
-        story.append(Table(stats_table, colWidths=[170, 100, 250], style=TableStyle([
+        story.append(Table(stats_table, colWidths=[130, 70, 180], style=TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
             ('TEXTCOLOR', (0,0), (-1,0), colors.white),
             ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
@@ -3447,7 +3447,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         story.append(Paragraph("""Visualisasi di bawah ini memberikan gambaran komprehensif tentang distribusi jenis 
                              anomali, tingkat kepercayaan deteksi, dan bagaimana anomali tersebut terdistribusi 
                              sepanjang timeline video.""", styles['Justify']))
-        story.append(PlatypusImage(result.plots['anomaly_summary'], width=520, height=350, kind='proportional'))
+        story.append(PlatypusImage(result.plots['anomaly_summary'], width=380, height=255, kind='proportional'))
         story.append(Paragraph("Ringkasan visual analisis anomali, menunjukkan distribusi jenis anomali, tingkat kepercayaan, timeline, dan statistik kunci.", styles['Caption']))
         story.append(Spacer(1, 12))
 
@@ -3471,7 +3471,7 @@ def run_tahap_5_pelaporan_dan_validasi(
             
             # Penjelasan lebih kaya
             story.append(Paragraph("<b>Penjelasan Umum:</b>", styles['Normal']))
-            add_simple(get_anomaly_explanation(event_type))
+            story.append(Paragraph(get_anomaly_explanation(event_type), styles['SimplifiedExplanation']))
             story.append(Paragraph("<b>Implikasi Forensik:</b>", styles['Normal']))
             story.append(Paragraph(get_anomaly_implication(event_type), styles['HighlightBox']))
 
@@ -3482,11 +3482,11 @@ def run_tahap_5_pelaporan_dan_validasi(
                 for exp_type, exp_data in loc['explanations'].items():
                     if isinstance(exp_data, dict):
                         story.append(Paragraph(f"<b>{exp_type.replace('_', ' ').title()}:</b>", styles['Normal']))
-                        if exp_data.get('simple_explanation'):
-                            add_simple(f"<i>Penjelasan Sederhana:</i> {exp_data['simple_explanation']}")
+                        if include_simple and exp_data.get('simple_explanation'):
+                            story.append(Paragraph(f"<i>Penjelasan Sederhana:</i> {exp_data['simple_explanation']}", styles['SimplifiedExplanation']))
                             story.append(Spacer(1, 4))
-                        if exp_data.get('technical_explanation'):
-                            add_technical(f"<i>Penjelasan Teknis:</i> {exp_data['technical_explanation']}")
+                        if include_technical and exp_data.get('technical_explanation'):
+                            story.append(Paragraph(f"<i>Penjelasan Teknis:</i> {exp_data['technical_explanation']}", styles['TechnicalExplanation']))
                             story.append(Spacer(1, 4))
 
             # Tabel bukti teknis
@@ -3499,7 +3499,7 @@ def run_tahap_5_pelaporan_dan_validasi(
                     interpretation = explain_metric(key)
                     tech_data.append([key.replace('_', ' ').title(), Paragraph(str(val), styles['Code']), Paragraph(interpretation, styles['Normal'])])
 
-            story.append(Table(tech_data, colWidths=[150, 100, 275], style=TableStyle([
+            story.append(Table(tech_data, colWidths=[100, 70, 210], style=TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.white),
                 ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
@@ -3514,30 +3514,30 @@ def run_tahap_5_pelaporan_dan_validasi(
             v_headers, v_evidence = [], []
             if loc.get('image') and Path(loc['image']).exists():
                 v_headers.append("<b>Sampel Frame (Asli)</b>")
-                v_evidence.append(PlatypusImage(loc['image'], width=250, height=140, kind='proportional'))
+                v_evidence.append(PlatypusImage(loc['image'], width=180, height=101, kind='proportional'))
             if loc.get('ela_path') and Path(loc['ela_path']).exists():
                 v_headers.append("<b>Analisis Kompresi (ELA)</b>")
-                v_evidence.append(PlatypusImage(loc['ela_path'], width=250, height=140, kind='proportional'))
+                v_evidence.append(PlatypusImage(loc['ela_path'], width=180, height=101, kind='proportional'))
             
             if v_evidence:
-                story.append(Table([v_headers, v_evidence], colWidths=[260]*len(v_headers), style=[('ALIGN',(0,0),(-1,-1),'CENTER')]))
+                story.append(Table([v_headers, v_evidence], colWidths=[190]*len(v_headers), style=[('ALIGN',(0,0),(-1,-1),'CENTER')]))
                 story.append(Paragraph("Kiri: Frame dari lokasi anomali. Kanan: Error Level Analysis menunjukkan area dengan level kompresi berbeda (terang = potensi manipulasi).", styles['Caption']))
                 story.append(Spacer(1, 6))
 
             # Visualisasi tambahan (ELA detail, SIFT heatmap)
             if loc.get('visualizations'):
                 if loc['visualizations'].get('ela_detailed') and Path(loc['visualizations']['ela_detailed']).exists():
-                    story.append(PlatypusImage(loc['visualizations']['ela_detailed'], width=520, height=180, kind='proportional'))
+                    story.append(PlatypusImage(loc['visualizations']['ela_detailed'], width=380, height=131, kind='proportional'))
                     story.append(Paragraph("Analisis ELA Detail: Perbandingan frame asli (kiri) dengan visualisasi ELA (kanan). Kotak merah menandai area dengan potensi manipulasi.", styles['Caption']))
                     story.append(Spacer(1, 6))
                     
                 if loc['visualizations'].get('sift_heatmap') and Path(loc['visualizations']['sift_heatmap']).exists():
-                    story.append(PlatypusImage(loc['visualizations']['sift_heatmap'], width=520, height=160, kind='proportional'))
+                    story.append(PlatypusImage(loc['visualizations']['sift_heatmap'], width=380, height=117, kind='proportional'))
                     story.append(Paragraph("Heatmap SIFT: Visualisasi kepadatan titik-titik fitur yang cocok, menunjukkan area dengan kecocokan tinggi (merah) vs. rendah (biru).", styles['Caption']))
                     story.append(Spacer(1, 6))
                     
             if loc.get('sift_path') and Path(loc.get('sift_path')).exists():
-                story.append(PlatypusImage(loc.get('sift_path'), width=520, height=160, kind='proportional'))
+                story.append(PlatypusImage(loc.get('sift_path'), width=380, height=117, kind='proportional'))
                 story.append(Paragraph("Bukti Pencocokan Fitur (SIFT+RANSAC): Garis hijau menghubungkan fitur-fitur yang cocok antara dua frame, menunjukkan bukti duplikasi.", styles['Caption']))
                 story.append(Spacer(1, 6))
 
@@ -3592,7 +3592,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         text_color = colors.darkred
 
     # Buat tabel dengan styling
-    reliability_table = Table([[reliability]], colWidths=[400])
+    reliability_table = Table([[reliability]], colWidths=[300])
     reliability_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (0, 0), bg_color),
         ('TEXTCOLOR', (0, 0), (0, 0), text_color),
@@ -3610,12 +3610,12 @@ def run_tahap_5_pelaporan_dan_validasi(
 
     # Tampilkan visualisasi FERM jika tersedia
     if result.plots.get('ferm_evidence_strength') and Path(result.plots['ferm_evidence_strength']).exists():
-        story.append(PlatypusImage(result.plots['ferm_evidence_strength'], width=520, height=320, kind='proportional'))
+        story.append(PlatypusImage(result.plots['ferm_evidence_strength'], width=380, height=234, kind='proportional'))
         story.append(Paragraph("Heatmap Kekuatan Bukti FERM: Menunjukkan efektivitas relatif dari berbagai metode deteksi untuk setiap jenis anomali.", styles['Caption']))
         story.append(Spacer(1, 12))
         
     if result.plots.get('ferm_reliability') and Path(result.plots['ferm_reliability']).exists():
-        story.append(PlatypusImage(result.plots['ferm_reliability'], width=520, height=280, kind='proportional'))
+        story.append(PlatypusImage(result.plots['ferm_reliability'], width=380, height=204, kind='proportional'))
         story.append(Paragraph("Grafik Faktor Reliabilitas: Menunjukkan faktor-faktor yang berkontribusi positif atau negatif terhadap penilaian keandalan bukti keseluruhan.", styles['Caption']))
         story.append(Spacer(1, 12))
 
@@ -3643,14 +3643,14 @@ def run_tahap_5_pelaporan_dan_validasi(
                           potensial terjadi dalam video.""", styles['Justify']))
     
     # Penjelasan untuk orang awam
-    add_simple("""<b>Penjelasan Sederhana:</b> Bayangkan ini seperti peta yang menunjukkan 'lokasi masalah'
-                          dalam video. Alih-alih hanya menunjukkan frame individual, peta ini mengelompokkan frame-frame
-                          bermasalah yang berdekatan menjadi 'kejadian' yang lebih bermakna - seperti menandai
-                          halaman-halaman bermasalah dalam buku, bukan hanya kata-kata individual.""")
+    story.append(Paragraph("""<b>Penjelasan Sederhana:</b> Bayangkan ini seperti peta yang menunjukkan 'lokasi masalah' 
+                          dalam video. Alih-alih hanya menunjukkan frame individual, peta ini mengelompokkan frame-frame 
+                          bermasalah yang berdekatan menjadi 'kejadian' yang lebih bermakna - seperti menandai 
+                          halaman-halaman bermasalah dalam buku, bukan hanya kata-kata individual.""", styles['SimplifiedExplanation']))
     
     # Tampilkan peta lokalisasi
     if result.plots.get('enhanced_localization_map') and Path(result.plots['enhanced_localization_map']).exists():
-        story.append(PlatypusImage(result.plots['enhanced_localization_map'], width=520, height=350, kind='proportional'))
+        story.append(PlatypusImage(result.plots['enhanced_localization_map'], width=380, height=255, kind='proportional'))
         story.append(Paragraph("Peta lokalisasi tampering dengan timeline, statistik, dan tingkat kepercayaan, menunjukkan di mana dan bagaimana manipulasi potensial terjadi dalam video.", styles['Caption']))
     story.append(Spacer(1, 12))
 
@@ -3669,7 +3669,7 @@ def run_tahap_5_pelaporan_dan_validasi(
             Paragraph(f"{assessment['quality_score']}%", styles['Normal']),
             Paragraph(issues_text, styles['Normal'])
         ])
-    story.append(Table(pipeline_data, colWidths=[180, 80, 80, 180], style=TableStyle([
+    story.append(Table(pipeline_data, colWidths=[95, 60, 60, 165], style=TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.darkblue), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE')])))
@@ -3681,7 +3681,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         story.append(Paragraph("""Infografis di bawah ini memberikan penjelasan visual tentang berbagai jenis anomali 
                              yang dapat dideteksi oleh sistem, termasuk definisi sederhana, metode deteksi, dan implikasi 
                              forensik. Ini membantu pengguna non-teknis memahami temuan-temuan dalam laporan.""", styles['Justify']))
-        story.append(PlatypusImage(result.plots['anomaly_infographic'], width=520, height=325, kind='proportional'))
+        story.append(PlatypusImage(result.plots['anomaly_infographic'], width=380, height=238, kind='proportional'))
         story.append(Paragraph("Infografis yang menjelaskan setiap jenis anomali dengan bahasa sederhana, metode deteksi, dan implikasi forensiknya.", styles['Caption']))
 
     story.append(PageBreak())
@@ -3706,7 +3706,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         ["Total Anomali", f"{result.summary['total_anomaly']} dari {result.summary['total_frames']} frame"],
         ["Pipeline Quality", f"{avg_pipeline_quality:.1f}%" if isinstance(avg_pipeline_quality, (float, int)) else "N/A"]
     ]
-    story.append(Table(validation_data, colWidths=[180, 345], style=TableStyle([
+    story.append(Table(validation_data, colWidths=[130, 250], style=TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.darkblue),('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
     ])))
@@ -3760,10 +3760,56 @@ def run_tahap_5_pelaporan_dan_validasi(
         doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
         result.pdf_report_path = pdf_path
         log(f"  ✅ Laporan PDF berhasil dibuat: {pdf_path.name}")
-    except Exception as e:
-        log(f"  {Icons.ERROR} Gagal membuat laporan PDF: {e}")
 
-    log(f"  {Icons.SUCCESS} Tahap 5 Selesai - Laporan telah disusun.")
+        # --- EKSPOR PNG ---
+        log(f"  {Icons.INFO} Mencoba mengekspor ke PNG...")
+        try:
+            # Periksa dependensi
+            from export_utils import check_dependency, check_poppler_installation
+            if check_dependency('pdf2image') and check_poppler_installation():
+                from pdf2image import convert_from_path
+                png_output_dir = out_dir / "png_exports"
+                png_output_dir.mkdir(exist_ok=True)
+                
+                images = convert_from_path(str(pdf_path), dpi=200) # Turunkan DPI untuk kecepatan
+                png_paths = []
+                for i, image in enumerate(images):
+                    png_path = png_output_dir / f"{pdf_path.stem}_page_{i+1}.png"
+                    image.save(png_path, 'PNG')
+                    png_paths.append(str(png_path)) # Simpan sebagai string
+                result.png_export_paths = png_paths
+                log(f"  ✅ Berhasil mengekspor {len(png_paths)} halaman PNG.")
+            else:
+                log("  ⚠️ Ekspor PNG dilewati. Periksa instalasi `pdf2image` dan `Poppler` (pastikan ada di PATH).")
+        except Exception as png_err:
+            log(f"  {Icons.ERROR} Gagal saat ekspor PNG: {png_err}")
+            
+        # --- BUAT DOCX ---
+        log(f"  {Icons.INFO} Mencoba membuat laporan DOCX...")
+        try:
+            from export_utils import check_dependency, create_docx_backend
+            if check_dependency('docx'):
+                docx_filename = f"{Path(result.video_path).stem}_report.docx"
+                docx_path = out_dir / docx_filename
+                
+                # Buat atribut timestamp di result untuk DOCX
+                result.analysis_timestamp = datetime.now()
+                
+                created_path = create_docx_backend(result, docx_path)
+                if created_path:
+                    result.docx_report_path = str(created_path) # Simpan sebagai string
+                    log(f"  ✅ Laporan DOCX berhasil dibuat: {created_path.name}")
+            else:
+                log("  ⚠️ Ekspor DOCX dilewati. `python-docx` tidak terpasang.")
+        except Exception as docx_err:
+            log(f"  {Icons.ERROR} Gagal saat membuat DOCX: {docx_err}")
+            
+    except Exception as e:
+        log(f"{Icons.ERROR} FATAL: Gagal total saat membangun laporan: {e}")
+        log(traceback.format_exc())
+        result.pdf_report_path = None # Tandai bahwa PDF gagal dibuat
+    
+    log(f"  {Icons.SUCCESS} Tahap 5 Selesai - Proses pelaporan lengkap.")
 
 ###############################################################################
 # MAIN EXECUTION
