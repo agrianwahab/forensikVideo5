@@ -64,6 +64,7 @@ try:
     import numpy as np
     from PIL import Image, ImageChops, ImageEnhance, ImageDraw, ImageFont
     from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.utils import ImageReader
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as PlatypusImage, Table, TableStyle, PageBreak
@@ -102,6 +103,9 @@ CONFIG = {
     "SSIM_USER_THRESHOLD": 0.30,
     "Z_USER_THRESHOLD": 5.0
 }
+
+# Ukuran halaman F5 (dalam point)
+PAGE_SIZE_F5 = (182 * mm, 257 * mm)
 
 class Icons:
     IDENTIFICATION="🔍"; PRESERVATION="🛡️"; COLLECTION="📥"; EXAMINATION="🔬";
@@ -3094,7 +3098,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         }
         return explanations.get(phase, "Penjelasan tidak tersedia untuk tahap ini.")
 
-    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=30, bottomMargin=50, leftMargin=30, rightMargin=30)
+    doc = SimpleDocTemplate(str(pdf_path), pagesize=PAGE_SIZE_F5, topMargin=30, bottomMargin=50, leftMargin=30, rightMargin=30)
     styles = getSampleStyleSheet()
 
     # Menambahkan style baru untuk laporan yang lebih profesional
@@ -3311,6 +3315,9 @@ def run_tahap_5_pelaporan_dan_validasi(
         if cluster_info.get('count') > 0:
             proportion = cluster_info['count'] / sum(c.get('count', 0) for c in result.kmeans_artifacts.get('clusters', []))
             story.append(Paragraph(f"<i>Interpretasi: Klaster ini mewakili sekitar {proportion*100:.1f}% dari seluruh frame video, menunjukkan adegan dengan karakteristik warna yang konsisten.</i>", styles['Caption']))
+
+    story.append(Paragraph("Kemampuan ekspor: visualisasi dapat disimpan dalam format <b>PNG</b> dan narasi laporan dapat diekspor ke <b>DOCX</b>.", styles['Normal']))
+    story.append(Spacer(1, 12))
 
     story.append(PageBreak())
 
