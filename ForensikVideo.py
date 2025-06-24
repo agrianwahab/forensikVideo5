@@ -57,9 +57,6 @@ from pathlib import Path
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Optional, Any
 
-# Dimensi kertas F5 (≈16.5 cm × 21.5 cm) dalam satuan poin
-F5 = (467.72, 609.45)
-
 # Pemeriksaan Dependensi Awal
 try:
     import cv2
@@ -3097,16 +3094,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         }
         return explanations.get(phase, "Penjelasan tidak tersedia untuk tahap ini.")
 
-    # Gunakan ukuran kertas F5 dengan margin sesuai permintaan (kiri/atas 4 cm,
-    # kanan/bawah 3 cm). Nilai dikonversi ke satuan poin (1 cm ≈ 28.35 pt).
-    doc = SimpleDocTemplate(
-        str(pdf_path),
-        pagesize=F5,
-        topMargin=113.4,    # 4 cm
-        bottomMargin=85.0,  # 3 cm
-        leftMargin=113.4,   # 4 cm
-        rightMargin=85.0    # 3 cm
-    )
+    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=30, bottomMargin=50, leftMargin=30, rightMargin=30)
     styles = getSampleStyleSheet()
 
     # Menambahkan style baru untuk laporan yang lebih profesional
@@ -3140,7 +3128,7 @@ def run_tahap_5_pelaporan_dan_validasi(
         canvas.saveState()
         canvas.setFont('Helvetica', 8)
         canvas.drawString(30, 30, f"Laporan VIFA-Pro | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        canvas.drawRightString(F5[0] - 30, 30, f"Halaman {doc.page}")
+        canvas.drawRightString(A4[0] - 30, 30, f"Halaman {doc.page}")
         canvas.restoreState()
 
     def add_simple(text: str):
